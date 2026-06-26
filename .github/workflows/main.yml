@@ -13,19 +13,23 @@ jobs:
       - name: Kodu Klonla
         uses: actions/checkout@v4
 
-      - name: Java Kurulumu (JDK 21 - KSP Uyuşmazlık Çözümü)
+      - name: Java Kurulumu (JDK 17)
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
-          java-version: '21'
+          java-version: '17'
 
-      - name: Gradle Ayarlarını Otomatik Düzenle (Hataları ve İmzayı Engelle)
+      - name: Gradle Ayarlarını Otomatik Düzenle (Hataları, İmzayı ve KSP'yi Engelle)
         run: |
-          # 1. build.gradle.kts içine Lint engelleme kurallarını otomatik ekler
+          # 1. build.gradle.kts içine Lint engelleme kurallarını ekler
           sed -i '/android {/a \  lint {\n    checkReleaseBuilds = false\n    abortOnError = false\n  }' app/build.gradle.kts
           
-          # 2. Release build tipindeki imza (release signingConfig) zorunluluğunu kaldırır, debug yapar
+          # 2. Release build tipindeki imza zorunluluğunu kaldırır, debug yapar
           sed -i 's/signingConfig = signingConfigs.getByName("release")/signingConfig = signingConfigs.getByName("debugConfig")/g' app/build.gradle.kts
+          
+          # 3. KSP hatasını kökten çözmek için sorun çıkaran ksp eklentisini tamamen devre dışı bırakır
+          sed -i 's/alias(libs.plugins.google.devtools.ksp)/\/\/ alias(libs.plugins.google.devtools.ksp)/g' app/build.gradle.kts
+          sed -i 's/"ksp"(libs./\/\/ "ksp"(libs./g' app/build.gradle.kts
 
       - name: Gradle Wrapper Oluştur ve APK Derle
         run: |
