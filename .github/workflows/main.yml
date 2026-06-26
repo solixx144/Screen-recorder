@@ -30,7 +30,7 @@ jobs:
       - name: Gradle Wrapper Oluştur ve APK Derle
         run: |
           gradle wrapper
-          ./gradlew assembleRelease -x lint -x lintVitalRelease
+          ./gradlew assembleRelease
 
       - name: APK Dosyasını Çıktı Olarak Yükle
         uses: actions/upload-artifact@v4
