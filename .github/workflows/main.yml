@@ -19,22 +19,21 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Gradle Ayarlarını Otomatik Düzenle (Hataları, İmzayı ve KSP'yi Engelle)
+      - name: Proje Ayarlarını Otomatik Düzenle (KSP, İmza ve Lint Hatalarını Kökten Çöz)
         run: |
-          # 1. build.gradle.kts içine Lint engelleme kurallarını ekler
+          # 1. KSP hatasını çözmek için proje adındaki boşluğu kaldır (My Application -> MyApplication yap)
+          sed -i 's/My Application/MyApplication/g' settings.gradle* || true
+          
+          # 2. build.gradle.kts içine Lint engelleme kurallarını ekle
           sed -i '/android {/a \  lint {\n    checkReleaseBuilds = false\n    abortOnError = false\n  }' app/build.gradle.kts
           
-          # 2. Release build tipindeki imza zorunluluğunu kaldırır, debug yapar
-          sed -i 's/signingConfig = signingConfigs.getByName("release")/signingConfig = signingConfigs.getByName("debugConfig")/g' app/build.gradle.kts
-          
-          # 3. KSP hatasını kökten çözmek için sorun çıkaran ksp eklentisini tamamen devre dışı bırakır
-          sed -i 's/alias(libs.plugins.google.devtools.ksp)/\/\/ alias(libs.plugins.google.devtools.ksp)/g' app/build.gradle.kts
-          sed -i 's/"ksp"(libs./\/\/ "ksp"(libs./g' app/build.gradle.kts
+          # 3. Olmayan imza dosyası hatasını çözmek için imza zorunluluğunu devreden çıkar (İmzasız APK üretimi)
+          sed -i 's/signingConfig = signingConfigs.getByName("release")/\/\/ signingConfig = signingConfigs.getByName("release")/g' app/build.gradle.kts
 
       - name: Gradle Wrapper Oluştur ve APK Derle
         run: |
           gradle wrapper
-          ./gradlew assembleRelease
+         ./gradlew assembleRelease --no-daemon
 
       - name: APK Dosyasını Çıktı Olarak Yükle
         uses: actions/upload-artifact@v4
