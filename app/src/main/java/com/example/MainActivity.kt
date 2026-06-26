@@ -13,9 +13,19 @@ import android.os.Environment
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.viewinterop.AndroidView
+import android.view.TextureView
+import android.graphics.SurfaceTexture
+import android.view.Surface
+import kotlin.math.roundToInt
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
@@ -130,6 +140,8 @@ class MainActivity : ComponentActivity() {
             (viewModel.customBitrate.value.toFloatOrNull() ?: 8.0f).toInt() * 1_000_000
         }
         val useHevcVal = viewModel.useHevc.value
+        val maxDurationVal = viewModel.maxDurationLimit.value ?: -1L
+        val maxFileSizeVal = viewModel.maxFileSizeLimit.value ?: -1L
 
         val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
             action = ScreenCaptureService.ACTION_START
@@ -140,6 +152,8 @@ class MainActivity : ComponentActivity() {
             putExtra(ScreenCaptureService.EXTRA_FPS, fpsVal)
             putExtra(ScreenCaptureService.EXTRA_BITRATE, bitrateVal)
             putExtra(ScreenCaptureService.EXTRA_USE_HEVC, useHevcVal)
+            putExtra(ScreenCaptureService.EXTRA_MAX_DURATION, maxDurationVal)
+            putExtra(ScreenCaptureService.EXTRA_MAX_FILE_SIZE, maxFileSizeVal)
         }
         ContextCompat.startForegroundService(this, serviceIntent)
     }
@@ -231,6 +245,14 @@ fun ScreenRecorderDashboard(
     val duration by viewModel.serviceDuration.collectAsState()
     val serviceError by viewModel.serviceError.collectAsState()
     val context = LocalContext.current
+
+    val folderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.setCustomSaveDir(uri)
+        }
+    }
 
     // Show error toasts if they occur in service
     LaunchedEffect(serviceError) {
@@ -428,7 +450,8 @@ fun ScreenRecorderDashboard(
                     viewModel = viewModel,
                     isRecording = isRecording,
                     onStartRecording = onStartRecordingRequested,
-                    onStopRecording = onStopRecordingRequested
+                    onStopRecording = onStopRecordingRequested,
+                    onSelectFolder = { folderLauncher.launch(null) }
                 )
                 1 -> RecordedVideosTab(
                     viewModel = viewModel
@@ -436,6 +459,95 @@ fun ScreenRecorderDashboard(
                 2 -> SelfUpdaterTab(
                     viewModel = viewModel
                 )
+            }
+        }
+    }
+
+    // Draggable Live Capture Overlay Preview
+    val showOverlayPreview by viewModel.showOverlayPreview.collectAsState()
+    if (isRecording && showOverlayPreview) {
+        var previewOffset by remember { mutableStateOf(Offset(50f, 150f)) }
+        
+        Box(
+            modifier = Modifier
+                .offset { IntOffset(previewOffset.x.roundToInt(), previewOffset.y.roundToInt()) }
+                .size(width = 140.dp, height = 240.dp)
+                .background(Color(0xE61F1A30), shape = RoundedCornerShape(16.dp))
+                .border(1.5.dp, Color(0xFF6366F1), shape = RoundedCornerShape(16.dp))
+                .pointerInput(Unit) {
+                    detectDragGestures { change, dragAmount ->
+                        change.consume()
+                        previewOffset = Offset(
+                            x = (previewOffset.x + dragAmount.x).coerceAtLeast(0f),
+                            y = (previewOffset.y + dragAmount.y).coerceAtLeast(0f)
+                        )
+                    }
+                }
+                .padding(8.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val pulseTransition = rememberInfiniteTransition(label = "pulsing_live")
+                        val liveAlpha by pulseTransition.animateFloat(
+                            initialValue = 0.3f,
+                            targetValue = 1f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(1000, easing = LinearEasing),
+                                repeatMode = RepeatMode.Reverse
+                            ),
+                            label = "pulsing_live"
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .scale(liveAlpha)
+                                .background(Color.Red, shape = CircleShape)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "LIVE CAPTURE",
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .background(Color.Black, shape = RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(8.dp))
+                ) {
+                    AndroidView(
+                        factory = { ctx ->
+                            TextureView(ctx).apply {
+                                surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                                    override fun onSurfaceTextureAvailable(texture: SurfaceTexture, w: Int, h: Int) {
+                                        val surface = Surface(texture)
+                                        ScreenCaptureService.setPreviewSurface(surface)
+                                    }
+
+                                    override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, w: Int, h: Int) {}
+
+                                    override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
+                                        ScreenCaptureService.setPreviewSurface(null)
+                                        return true
+                                    }
+
+                                    override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {}
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
             }
         }
     }
@@ -447,7 +559,8 @@ fun CaptureSettingsTab(
     viewModel: MainViewModel,
     isRecording: Boolean,
     onStartRecording: () -> Unit,
-    onStopRecording: () -> Unit
+    onStopRecording: () -> Unit,
+    onSelectFolder: () -> Unit
 ) {
     val width by viewModel.width.collectAsState()
     val height by viewModel.height.collectAsState()
@@ -659,42 +772,260 @@ fun CaptureSettingsTab(
             }
         }
 
+        // Custom Save Location
         item {
-            Spacer(modifier = Modifier.height(16.dp))
-            // Big Record Action Button
-            Button(
-                onClick = {
-                    if (isRecording) {
-                        onStopRecording()
-                    } else {
-                        onStartRecording()
+            val customFolderName by viewModel.customFolderName.collectAsState()
+            val customFolderUri by viewModel.customFolderUri.collectAsState()
+
+            GlassCard(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Save Location",
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Text(
+                                text = customFolderName ?: "Default (App Movies Folder)",
+                                fontSize = 12.sp,
+                                color = Color.Gray,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (customFolderUri != null) {
+                                IconButton(
+                                    onClick = { viewModel.clearCustomSaveDir() }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Delete,
+                                        contentDescription = "Reset Location",
+                                        tint = Color.Red.copy(alpha = 0.8f)
+                                    )
+                                }
+                            }
+                            Button(
+                                onClick = onSelectFolder,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF6366F1)
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Folder,
+                                    contentDescription = "Select Folder",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Choose", fontSize = 12.sp)
+                            }
+                        }
                     }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(64.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isRecording) Color(0xFF10B981) else Color(0xFF6366F1)
-                ),
-                shape = RoundedCornerShape(18.dp),
-                elevation = ButtonDefaults.buttonElevation(8.dp)
+                }
+            }
+        }
+
+        // Live Capture Preview Overlay Card
+        item {
+            val showOverlayPreview by viewModel.showOverlayPreview.collectAsState()
+
+            GlassCard(
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(
-                        imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.FiberManualRecord,
-                        contentDescription = "Action Icon",
-                        modifier = Modifier.size(24.dp)
+                    Column {
+                        Text(
+                            text = "Live Overlay Preview",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Floating preview of active capture screen",
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                    }
+                    Switch(
+                        checked = showOverlayPreview,
+                        onCheckedChange = { viewModel.setShowOverlayPreview(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = Color(0xFF6366F1)
+                        )
                     )
-                    Spacer(modifier = Modifier.width(12.dp))
+                }
+            }
+        }
+
+        // Auto Stop Recording Limits Section
+        item {
+            val maxDurationLimit by viewModel.maxDurationLimit.collectAsState()
+            val maxFileSizeLimit by viewModel.maxFileSizeLimit.collectAsState()
+
+            var durationText by remember { mutableStateOf(maxDurationLimit?.toString() ?: "") }
+            var fileSizeText by remember { mutableStateOf(maxFileSizeLimit?.toString() ?: "") }
+
+            GlassCard(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column {
                     Text(
-                        text = if (isRecording) "STOP ACTIVE RECORDING" else "LAUNCH SCREEN CAPTURE",
-                        fontSize = 16.sp,
+                        text = "Auto-Stop Thresholds",
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
+                    Text(
+                        text = "Automatically stops recording once bounds are reached",
+                        fontSize = 12.sp,
+                        color = Color.Gray
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = durationText,
+                            onValueChange = {
+                                val clean = it.filter { c -> c.isDigit() }
+                                durationText = clean
+                                viewModel.setMaxDurationLimit(clean.toLongOrNull())
+                            },
+                            label = { Text("Max Duration (sec)", fontSize = 11.sp) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = Color.Black.copy(alpha = 0.25f),
+                                unfocusedContainerColor = Color.Black.copy(alpha = 0.15f),
+                                focusedBorderColor = Color(0xFF6366F1),
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.1f),
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+
+                        OutlinedTextField(
+                            value = fileSizeText,
+                            onValueChange = {
+                                val clean = it.filter { c -> c.isDigit() }
+                                fileSizeText = clean
+                                viewModel.setMaxFileSizeLimit(clean.toLongOrNull())
+                            },
+                            label = { Text("Max File Size (MB)", fontSize = 11.sp) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = Color.Black.copy(alpha = 0.25f),
+                                unfocusedContainerColor = Color.Black.copy(alpha = 0.15f),
+                                focusedBorderColor = Color(0xFF6366F1),
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.1f),
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Dual Control Action Buttons
+        item {
+            val isPaused by viewModel.isServicePaused.collectAsState()
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (isRecording) {
+                    Button(
+                        onClick = {
+                            if (isPaused) {
+                                viewModel.resumeRecording()
+                            } else {
+                                viewModel.pauseRecording()
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1.0f)
+                            .height(64.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isPaused) Color(0xFFF59E0B) else Color(0xFF4B5563)
+                        ),
+                        shape = RoundedCornerShape(18.dp),
+                        elevation = ButtonDefaults.buttonElevation(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                contentDescription = if (isPaused) "Resume" else "Pause",
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (isPaused) "RESUME" else "PAUSE",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        if (isRecording) {
+                            onStopRecording()
+                        } else {
+                            onStartRecording()
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1.0f)
+                        .height(64.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isRecording) Color(0xFFEF4444) else Color(0xFF6366F1)
+                    ),
+                    shape = RoundedCornerShape(18.dp),
+                    elevation = ButtonDefaults.buttonElevation(8.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                            contentDescription = "Record Control Action",
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isRecording) "STOP RECORD" else "START CAPTURE",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
                 }
             }
         }

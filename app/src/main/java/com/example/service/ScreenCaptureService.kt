@@ -38,6 +38,8 @@ class ScreenCaptureService : Service() {
     private var durationJob: Job? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
 
+    private var previewVirtualDisplay: android.hardware.display.VirtualDisplay? = null
+
     companion object {
         private const val TAG = "ScreenCaptureService"
         private const val CHANNEL_ID = "screen_record_channel"
@@ -53,9 +55,17 @@ class ScreenCaptureService : Service() {
 
         const val ACTION_START = "action_start"
         const val ACTION_STOP = "action_stop"
+        const val ACTION_PAUSE = "action_pause"
+        const val ACTION_RESUME = "action_resume"
+
+        const val EXTRA_MAX_DURATION = "extra_max_duration"
+        const val EXTRA_MAX_FILE_SIZE = "extra_max_file_size"
 
         private val _isRecording = MutableStateFlow(false)
         val isRecording = _isRecording.asStateFlow()
+
+        private val _isPaused = MutableStateFlow(false)
+        val isPaused = _isPaused.asStateFlow()
 
         private val _durationSeconds = MutableStateFlow(0L)
         val durationSeconds = _durationSeconds.asStateFlow()
@@ -65,13 +75,35 @@ class ScreenCaptureService : Service() {
 
         private val _error = MutableStateFlow<String?>(null)
         val error = _error.asStateFlow()
+
+        private val _previewSurface = MutableStateFlow<android.view.Surface?>(null)
+        val previewSurface = _previewSurface.asStateFlow()
+
+        @Volatile
+        var instance: ScreenCaptureService? = null
+            private set
+
+        fun setPreviewSurface(surface: android.view.Surface?) {
+            _previewSurface.value = surface
+            instance?.let { srv ->
+                if (surface != null) {
+                    srv.startPreviewDisplay(surface)
+                } else {
+                    srv.stopPreviewDisplay()
+                }
+            }
+        }
     }
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         createNotificationChannel()
     }
+
+    private var maxDurationLimit: Long? = null
+    private var maxFileSizeLimit: Long? = null // in bytes
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action ?: return START_NOT_STICKY
@@ -85,9 +117,11 @@ class ScreenCaptureService : Service() {
                 val fps = intent.getIntExtra(EXTRA_FPS, 30)
                 val bitrate = intent.getIntExtra(EXTRA_BITRATE, 0)
                 val useHevc = intent.getBooleanExtra(EXTRA_USE_HEVC, true)
+                val maxDuration = intent.getLongExtra(EXTRA_MAX_DURATION, -1L)
+                val maxFileSize = intent.getLongExtra(EXTRA_MAX_FILE_SIZE, -1L)
 
                 if (resultCode != -1 && resultData != null) {
-                    startRecording(resultCode, resultData, width, height, fps, bitrate, useHevc)
+                    startRecording(resultCode, resultData, width, height, fps, bitrate, useHevc, maxDuration, maxFileSize)
                 } else {
                     stopSelf()
                 }
@@ -95,6 +129,12 @@ class ScreenCaptureService : Service() {
             ACTION_STOP -> {
                 stopRecording()
                 stopSelf()
+            }
+            ACTION_PAUSE -> {
+                pauseRecording()
+            }
+            ACTION_RESUME -> {
+                resumeRecording()
             }
         }
         return START_STICKY
@@ -107,9 +147,14 @@ class ScreenCaptureService : Service() {
         height: Int,
         fps: Int,
         bitrate: Int,
-        useHevc: Boolean
+        useHevc: Boolean,
+        maxDuration: Long,
+        maxFileSize: Long
     ) {
         if (_isRecording.value) return
+
+        maxDurationLimit = if (maxDuration > 0) maxDuration else null
+        maxFileSizeLimit = if (maxFileSize > 0) maxFileSize * 1024 * 1024 else null
 
         try {
             // Must launch in foreground first to satisfy Android 14 projection requirements
@@ -161,8 +206,12 @@ class ScreenCaptureService : Service() {
             }
 
             _isRecording.value = true
+            _isPaused.value = false
             _error.value = null
             _durationSeconds.value = 0L
+
+            // Set up preview if live preview surface is available
+            _previewSurface.value?.let { startPreviewDisplay(it) }
 
             // Start duration ticker
             startDurationCounter()
@@ -172,6 +221,22 @@ class ScreenCaptureService : Service() {
             _error.value = "Recording failed to start: ${e.localizedMessage}"
             stopRecording()
             stopSelf()
+        }
+    }
+
+    private fun pauseRecording() {
+        if (_isRecording.value && !_isPaused.value) {
+            recorder?.pause()
+            _isPaused.value = true
+            updateNotification(_durationSeconds.value)
+        }
+    }
+
+    private fun resumeRecording() {
+        if (_isRecording.value && _isPaused.value) {
+            recorder?.resume()
+            _isPaused.value = false
+            updateNotification(_durationSeconds.value)
         }
     }
 
@@ -198,7 +263,33 @@ class ScreenCaptureService : Service() {
             mediaProjection = null
         }
 
+        stopPreviewDisplay()
+
         _isRecording.value = false
+        _isPaused.value = false
+
+        // Copy to custom folder if configured
+        val prefs = getSharedPreferences("screen_recorder_prefs", Context.MODE_PRIVATE)
+        val customFolderUri = prefs.getString("custom_folder_uri", null)
+        val tempFile = _currentFile.value
+        if (customFolderUri != null && tempFile != null && tempFile.exists()) {
+            try {
+                val treeUri = android.net.Uri.parse(customFolderUri)
+                val dirFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(this, treeUri)
+                val newFile = dirFile?.createFile("video/mp4", tempFile.name)
+                if (newFile != null) {
+                    contentResolver.openOutputStream(newFile.uri)?.use { out ->
+                        tempFile.inputStream().use { inp ->
+                            inp.copyTo(out)
+                        }
+                    }
+                    Log.d(TAG, "Copied recorded video to custom SAF folder: ${newFile.uri}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to copy to custom directory: ${e.localizedMessage}", e)
+            }
+        }
+
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
@@ -206,10 +297,62 @@ class ScreenCaptureService : Service() {
         durationJob = serviceScope.launch {
             while (_isRecording.value) {
                 delay(1000)
-                _durationSeconds.value += 1
-                updateNotification(_durationSeconds.value)
+                if (!_isPaused.value) {
+                    _durationSeconds.value += 1
+                    updateNotification(_durationSeconds.value)
+
+                    // Verify duration limit bounds
+                    maxDurationLimit?.let { limit ->
+                        if (_durationSeconds.value >= limit) {
+                            Log.d(TAG, "Duration limit reached: auto-stopping.")
+                            stopRecording()
+                            stopSelf()
+                        }
+                    }
+
+                    // Verify file size limit bounds
+                    maxFileSizeLimit?.let { limit ->
+                        _currentFile.value?.let { file ->
+                            if (file.exists() && file.length() >= limit) {
+                                Log.d(TAG, "File size limit reached: auto-stopping.")
+                                stopRecording()
+                                stopSelf()
+                            }
+                        }
+                    }
+                }
             }
         }
+    }
+
+    fun startPreviewDisplay(surface: android.view.Surface) {
+        val proj = mediaProjection ?: return
+        if (previewVirtualDisplay != null) {
+            previewVirtualDisplay?.release()
+        }
+        try {
+            val metrics = resources.displayMetrics
+            val previewWidth = 360
+            val previewHeight = (360f * (metrics.heightPixels.toFloat() / metrics.widthPixels.toFloat())).toInt()
+            previewVirtualDisplay = proj.createVirtualDisplay(
+                "ScreenCapturePreview",
+                previewWidth,
+                previewHeight,
+                metrics.densityDpi,
+                android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                surface,
+                null,
+                null
+            )
+            Log.d(TAG, "Preview VirtualDisplay created successfully: ${previewWidth}x${previewHeight}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create preview VirtualDisplay", e)
+        }
+    }
+
+    fun stopPreviewDisplay() {
+        previewVirtualDisplay?.release()
+        previewVirtualDisplay = null
     }
 
     private fun updateNotification(duration: Long) {
@@ -222,10 +365,14 @@ class ScreenCaptureService : Service() {
             action = ACTION_STOP
         }
         
-        // Handle pending intents according to Android 12+ API 31 flags
+        val pauseIntent = Intent(this, ScreenCaptureService::class.java).apply {
+            action = if (_isPaused.value) ACTION_RESUME else ACTION_PAUSE
+        }
+
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
         val stopPendingIntent = PendingIntent.getService(this, 1, stopIntent, flags)
+        val pausePendingIntent = PendingIntent.getService(this, 2, pauseIntent, flags)
 
         val mainIntent = Intent(this, MainActivity::class.java)
         val mainPendingIntent = PendingIntent.getActivity(this, 0, mainIntent, flags)
@@ -237,8 +384,12 @@ class ScreenCaptureService : Service() {
             duration % 60
         )
 
+        val pauseLabel = if (_isPaused.value) "Resume" else "Pause"
+        val pauseIcon = if (_isPaused.value) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause
+        val title = if (_isPaused.value) "Screen Recording Paused" else "Screen Recording Active"
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Screen Recording Active")
+            .setContentTitle(title)
             .setContentText("Duration: $durationStr")
             .setSmallIcon(android.R.drawable.presence_video_online)
             .setOngoing(true)
@@ -246,8 +397,13 @@ class ScreenCaptureService : Service() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(mainPendingIntent)
             .addAction(
-                android.R.drawable.ic_media_pause,
-                "Stop Recording",
+                pauseIcon,
+                pauseLabel,
+                pausePendingIntent
+            )
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Stop",
                 stopPendingIntent
             )
             .build()
@@ -269,6 +425,7 @@ class ScreenCaptureService : Service() {
 
     override fun onDestroy() {
         stopRecording()
+        instance = null
         super.onDestroy()
     }
 

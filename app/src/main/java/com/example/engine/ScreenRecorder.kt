@@ -32,6 +32,11 @@ class ScreenRecorder(
     private var videoTrackIndex = -1
     private var isMuxerStarted = false
 
+    @Volatile
+    private var isPaused = false
+    private var pauseTimeStartUs = 0L
+    private var elapsedPauseTimeUs = 0L
+
     companion object {
         private const val TAG = "ScreenRecorder"
         private const val MIME_HEVC = MediaFormat.MIMETYPE_VIDEO_HEVC
@@ -165,6 +170,10 @@ class ScreenRecorder(
                         isMuxerStarted = true
                         Log.d(TAG, "MediaMuxer started writing video track index: $videoTrackIndex")
                     } else if (outputBufferIndex >= 0) {
+                        if (isPaused) {
+                            localEncoder.releaseOutputBuffer(outputBufferIndex, false)
+                            continue
+                        }
                         val encodedData = localEncoder.getOutputBuffer(outputBufferIndex) ?: continue
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
                             bufferInfo.size = 0
@@ -175,6 +184,10 @@ class ScreenRecorder(
                             }
                             encodedData.position(bufferInfo.offset)
                             encodedData.limit(bufferInfo.offset + bufferInfo.size)
+                            
+                            // Adjust presentation timestamp to account for the paused period
+                            bufferInfo.presentationTimeUs -= elapsedPauseTimeUs
+                            
                             localMuxer.writeSampleData(videoTrackIndex, encodedData, bufferInfo)
                         }
                         localEncoder.releaseOutputBuffer(outputBufferIndex, false)
@@ -189,6 +202,23 @@ class ScreenRecorder(
             }
         }, "ScreenRecorderDrainThread")
         drainThread?.start()
+    }
+
+    fun pause() {
+        if (!isRecording || isPaused) return
+        isPaused = true
+        pauseTimeStartUs = System.nanoTime() / 1000
+        Log.d(TAG, "ScreenRecorder paused")
+    }
+
+    fun resume() {
+        if (!isRecording || !isPaused) return
+        val nowUs = System.nanoTime() / 1000
+        if (pauseTimeStartUs > 0) {
+            elapsedPauseTimeUs += (nowUs - pauseTimeStartUs)
+        }
+        isPaused = false
+        Log.d(TAG, "ScreenRecorder resumed, total elapsed pause time: ${elapsedPauseTimeUs / 1000} ms")
     }
 
     fun stop() {

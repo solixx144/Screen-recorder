@@ -67,11 +67,95 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Expose service recording states
     val isServiceRecording = ScreenCaptureService.isRecording
+    val isServicePaused = ScreenCaptureService.isPaused
     val serviceDuration = ScreenCaptureService.durationSeconds
     val serviceError = ScreenCaptureService.error
 
+    private val prefs = context.getSharedPreferences("screen_recorder_prefs", Context.MODE_PRIVATE)
+
+    private val _maxDurationLimit = MutableStateFlow<Long?>(null) // in seconds, null = no limit
+    val maxDurationLimit = _maxDurationLimit.asStateFlow()
+
+    private val _maxFileSizeLimit = MutableStateFlow<Long?>(null) // in MB, null = no limit
+    val maxFileSizeLimit = _maxFileSizeLimit.asStateFlow()
+
+    private val _customFolderUri = MutableStateFlow<String?>(null)
+    val customFolderUri = _customFolderUri.asStateFlow()
+
+    private val _customFolderName = MutableStateFlow<String?>(null)
+    val customFolderName = _customFolderName.asStateFlow()
+
+    private val _showOverlayPreview = MutableStateFlow(true)
+    val showOverlayPreview = _showOverlayPreview.asStateFlow()
+
     init {
+        val savedDuration = prefs.getLong("max_duration_limit", -1L)
+        _maxDurationLimit.value = if (savedDuration > 0) savedDuration else null
+        
+        val savedFileSize = prefs.getLong("max_file_size_limit", -1L)
+        _maxFileSizeLimit.value = if (savedFileSize > 0) savedFileSize else null
+
+        _customFolderUri.value = prefs.getString("custom_folder_uri", null)
+        _customFolderName.value = prefs.getString("custom_folder_name", null)
+        _showOverlayPreview.value = prefs.getBoolean("show_overlay_preview", true)
         refreshVideosList()
+    }
+
+    fun setMaxDurationLimit(seconds: Long?) {
+        _maxDurationLimit.value = seconds
+        prefs.edit().putLong("max_duration_limit", seconds ?: -1L).apply()
+    }
+
+    fun setMaxFileSizeLimit(mb: Long?) {
+        _maxFileSizeLimit.value = mb
+        prefs.edit().putLong("max_file_size_limit", mb ?: -1L).apply()
+    }
+
+    fun setShowOverlayPreview(show: Boolean) {
+        _showOverlayPreview.value = show
+        prefs.edit().putBoolean("show_overlay_preview", show).apply()
+    }
+
+    fun setCustomSaveDir(uri: android.net.Uri) {
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("MainViewModel", "Failed to take persistable URI permission", e)
+        }
+        val documentFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, uri)
+        val name = documentFile?.name ?: uri.path ?: "Custom Folder"
+        _customFolderUri.value = uri.toString()
+        _customFolderName.value = name
+        prefs.edit()
+            .putString("custom_folder_uri", uri.toString())
+            .putString("custom_folder_name", name)
+            .apply()
+    }
+
+    fun clearCustomSaveDir() {
+        _customFolderUri.value = null
+        _customFolderName.value = null
+        prefs.edit()
+            .remove("custom_folder_uri")
+            .remove("custom_folder_name")
+            .apply()
+    }
+
+    fun pauseRecording() {
+        val intent = android.content.Intent(context, ScreenCaptureService::class.java).apply {
+            action = ScreenCaptureService.ACTION_PAUSE
+        }
+        context.startService(intent)
+    }
+
+    fun resumeRecording() {
+        val intent = android.content.Intent(context, ScreenCaptureService::class.java).apply {
+            action = ScreenCaptureService.ACTION_RESUME
+        }
+        context.startService(intent)
     }
 
     fun setWidth(value: String) {
