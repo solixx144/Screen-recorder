@@ -1,0 +1,33 @@
+name: Android APK Build
+
+on:
+  push:
+    branches: [ main ] # Eğer ana dalın 'master' ise burayı master yapabilirsin
+  workflow_dispatch:   # Bu satır, tabletten butona basarak manuel APK üretmeni sağlar
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Kodu Klonla
+        uses: actions/checkout@v4
+
+      - name: Java Kurulumu (JDK 17)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Gradle'a Çalıştırma İzni Ver
+        run: chmod +x gradlew
+
+      - name: APK Derle (Assemble Release)
+        run: ./gradlew assembleRelease
+
+      - name: APK Dosyasını Çıktı Olarak Yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: screen-recorder-apk
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+
