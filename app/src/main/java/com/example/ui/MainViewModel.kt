@@ -88,6 +88,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _showOverlayPreview = MutableStateFlow(true)
     val showOverlayPreview = _showOverlayPreview.asStateFlow()
 
+    private val _showFloatingController = MutableStateFlow(false)
+    val showFloatingController = _showFloatingController.asStateFlow()
+
     init {
         val savedDuration = prefs.getLong("max_duration_limit", -1L)
         _maxDurationLimit.value = if (savedDuration > 0) savedDuration else null
@@ -98,7 +101,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _customFolderUri.value = prefs.getString("custom_folder_uri", null)
         _customFolderName.value = prefs.getString("custom_folder_name", null)
         _showOverlayPreview.value = prefs.getBoolean("show_overlay_preview", true)
+        _showFloatingController.value = prefs.getBoolean("show_floating_controller", false)
         refreshVideosList()
+    }
+
+    fun setShowFloatingController(show: Boolean) {
+        _showFloatingController.value = show
+        prefs.edit().putBoolean("show_floating_controller", show).apply()
     }
 
     fun setMaxDurationLimit(seconds: Long?) {

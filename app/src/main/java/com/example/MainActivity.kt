@@ -5,6 +5,9 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ShortcutInfo
+import android.content.pm.ShortcutManager
+import android.graphics.drawable.Icon
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -122,6 +125,72 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+
+        setupAppShortcuts()
+        handleIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        val action = intent?.action ?: return
+        when (action) {
+            "com.example.ACTION_SHORTCUT_START" -> {
+                if (viewModel.isServiceRecording.value) {
+                    Toast.makeText(this, "Screen recording is already active", Toast.LENGTH_SHORT).show()
+                } else {
+                    requestScreenCapturePermission()
+                }
+            }
+            "com.example.ACTION_SHORTCUT_STOP" -> {
+                if (viewModel.isServiceRecording.value) {
+                    stopRecordingService()
+                    Toast.makeText(this, "Screen recording stopped", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "No active recording to stop", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun setupAppShortcuts() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
+            val shortcutManager = getSystemService(ShortcutManager::class.java)
+            if (shortcutManager != null) {
+                val startIntent = Intent(this, MainActivity::class.java).apply {
+                    this.action = "com.example.ACTION_SHORTCUT_START"
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                }
+                val stopIntent = Intent(this, MainActivity::class.java).apply {
+                    this.action = "com.example.ACTION_SHORTCUT_STOP"
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                }
+
+                val startShortcut = ShortcutInfo.Builder(this, "shortcut_start_rec")
+                    .setShortLabel("Start Rec")
+                    .setLongLabel("Start Screen Recording")
+                    .setIcon(Icon.createWithResource(this, android.R.drawable.presence_video_online))
+                    .setIntent(startIntent)
+                    .build()
+
+                val stopShortcut = ShortcutInfo.Builder(this, "shortcut_stop_rec")
+                    .setShortLabel("Stop Rec")
+                    .setLongLabel("Stop Screen Recording")
+                    .setIcon(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel))
+                    .setIntent(stopIntent)
+                    .build()
+
+                try {
+                    shortcutManager.dynamicShortcuts = listOf(startShortcut, stopShortcut)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
     }
 
     private fun requestScreenCapturePermission() {
@@ -170,6 +239,17 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         viewModel.refreshVideosList()
+        
+        // Auto-start floating controls if enabled in settings and has permission
+        if (viewModel.showFloatingController.value) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                if (Settings.canDrawOverlays(this)) {
+                    startService(Intent(this, com.example.service.FloatingControlService::class.java))
+                }
+            } else {
+                startService(Intent(this, com.example.service.FloatingControlService::class.java))
+            }
+        }
     }
 }
 
@@ -562,6 +642,20 @@ fun CaptureSettingsTab(
     onStopRecording: () -> Unit,
     onSelectFolder: () -> Unit
 ) {
+    val context = LocalContext.current
+    val overlayLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { _ ->
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (Settings.canDrawOverlays(context)) {
+                viewModel.setShowFloatingController(true)
+                context.startService(Intent(context, com.example.service.FloatingControlService::class.java))
+            } else {
+                Toast.makeText(context, "Overlay permission denied. Cannot show floating widget.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     val width by viewModel.width.collectAsState()
     val height by viewModel.height.collectAsState()
     val fps by viewModel.fps.collectAsState()
@@ -863,6 +957,58 @@ fun CaptureSettingsTab(
                     Switch(
                         checked = showOverlayPreview,
                         onCheckedChange = { viewModel.setShowOverlayPreview(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = Color(0xFF6366F1)
+                        )
+                    )
+                }
+            }
+        }
+
+        // Floating Control Widget Switch Card
+        item {
+            val showFloatingController by viewModel.showFloatingController.collectAsState()
+
+            GlassCard(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Floating Control Panel",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Always-on-screen overlay for quick start, stop, pause, and settings",
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                    }
+                    Switch(
+                        checked = showFloatingController,
+                        onCheckedChange = { isChecked ->
+                            if (isChecked) {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                                    val intent = Intent(
+                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:${context.packageName}")
+                                    )
+                                    overlayLauncher.launch(intent)
+                                } else {
+                                    viewModel.setShowFloatingController(true)
+                                    context.startService(Intent(context, com.example.service.FloatingControlService::class.java))
+                                }
+                            } else {
+                                viewModel.setShowFloatingController(false)
+                                context.stopService(Intent(context, com.example.service.FloatingControlService::class.java))
+                            }
+                        },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = Color(0xFF6366F1)
