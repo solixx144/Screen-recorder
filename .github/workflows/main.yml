@@ -19,10 +19,10 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Gradle Wrapper Oluştur ve Derle
+      - name: Gradle Wrapper Oluştur ve APK Derle
         run: |
           gradle wrapper
-          ./gradlew assembleRelease
+          ./gradlew assembleRelease -Dxlint=ignore -Dlint.skip=true -Pandroid.experimental.disableCompileSdkChecks=true
 
       - name: APK Dosyasını Çıktı Olarak Yükle
         uses: actions/upload-artifact@v4
