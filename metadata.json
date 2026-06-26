@@ -1,0 +1,6 @@
+{
+  "name": "Screen Recorder",
+  "description": "Advanced customizable screen recorder with custom resolutions, frame rates, and automatic updates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
