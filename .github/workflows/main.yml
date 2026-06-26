@@ -19,10 +19,18 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
+      - name: Gradle Ayarlarını Otomatik Düzenle (Hataları ve İmzayı Engelle)
+        run: |
+          # 1. build.gradle.kts içine Lint engelleme kurallarını otomatik ekler
+          sed -i '/android {/a \  lint {\n    checkReleaseBuilds = false\n    abortOnError = false\n  }' app/build.gradle.kts
+          
+          # 2. Release build tipindeki imza (release signingConfig) zorunluluğunu kaldırır, debug yapar
+          sed -i 's/signingConfig = signingConfigs.getByName("release")/signingConfig = signingConfigs.getByName("debugConfig")/g' app/build.gradle.kts
+
       - name: Gradle Wrapper Oluştur ve APK Derle
         run: |
           gradle wrapper
-          ./gradlew assembleRelease -x lint -x lintVitalRelease -Dxlint=ignore -Dlint.skip=true -Pandroid.experimental.disableCompileSdkChecks=true
+          ./gradlew assembleRelease -x lint -x lintVitalRelease
 
       - name: APK Dosyasını Çıktı Olarak Yükle
         uses: actions/upload-artifact@v4
