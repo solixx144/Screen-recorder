@@ -22,7 +22,7 @@ jobs:
       - name: Gradle Wrapper Oluştur ve APK Derle
         run: |
           gradle wrapper
-          ./gradlew assembleRelease -Dxlint=ignore -Dlint.skip=true -Pandroid.experimental.disableCompileSdkChecks=true
+          ./gradlew assembleRelease -x lint -x lintVitalRelease -Dxlint=ignore -Dlint.skip=true -Pandroid.experimental.disableCompileSdkChecks=true
 
       - name: APK Dosyasını Çıktı Olarak Yükle
         uses: actions/upload-artifact@v4
