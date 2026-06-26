@@ -2,8 +2,8 @@ name: Android APK Build
 
 on:
   push:
-    branches: [ main ] # Eğer ana dalın 'master' ise burayı master yapabilirsin
-  workflow_dispatch:   # Bu satır, tabletten butona basarak manuel APK üretmeni sağlar
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -19,15 +19,13 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Gradle'a Çalıştırma İzni Ver
-        run: chmod +x gradlew
-
-      - name: APK Derle (Assemble Release)
-        run: ./gradlew assembleRelease
+      - name: Gradle Wrapper Oluştur ve Derle
+        run: |
+          gradle wrapper
+          ./gradlew assembleRelease
 
       - name: APK Dosyasını Çıktı Olarak Yükle
         uses: actions/upload-artifact@v4
         with:
           name: screen-recorder-apk
           path: app/build/outputs/apk/release/app-release-unsigned.apk
-
